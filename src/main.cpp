@@ -18,8 +18,7 @@ std::mutex kv_mutex;
 
 std::vector<std::string> parse_resp_array(const std::string& request){
   std::vector<std::string> args;
-  if(request.empty() || request[0] != '*') reutrn args;
-
+  if(request.empty() || request[0] != '*') return args;
   size_t pos = request.find("\r\n")+2;
   while(pos<request.length()){
     if(request[pos]!='$') break;
@@ -57,29 +56,51 @@ void handle_client(int client_fd){
     std::transform(upper_request.begin(), upper_request.end(), upper_request.begin(), ::toupper);
     
     
-    if(upper_request.find("PING") != std::string::npos){
+    if(upper_request.find("PING")){
       const char *response = "+PONG\r\n";
       send(client_fd, response, strlen(response),0);
     }
-    else if (upper_request.find("ECHO") != std::string::npos){
-      size_t last_dollar = request.find_last_of('$');
-      size_t data_start = request.find("\r\n", last_dollar) +2;
-
-      std::string echo_arg = request.substr(data_start);
-      if(echo_arg.size()>=2){
-        echo_arg.erase(echo_arg.size() - 2);
-
-      }
-
+    else if (upper_request.find("ECHO")){
+      if(args.size()<2) continue;
+      std::string echo_arg = arg[1];
       std::string response = "$" +std::to_string(echo_arg.length()) + "\r\n" + echo_arg + "\r\n";
       send(client_fd, response.c_str(), response.length(), 0);
     }
 
-    else if(upper_request.find("GET") != std::string::npos){
-      
-    }
-    else if(upper_request.find("SET") != std::string::npos){
+    else if(upper_request.find("GET")){
+      if(args_request.size()<2) continue;
 
+      std::string key  = args[1];
+      std::string response;
+      {
+        std::lock_guard<std::mutex> lock(kv_mutex);
+        if(kv_store.find(key) != kv_store.end()){
+          std::string value = kv_store[key];
+          response = "$" + std::to_string(value.length()) + "\r\n" + value + "\r\n";
+
+        }
+        else{
+          response = "$-1\r\n";
+        }
+
+      }
+      send(client_fd, response.c_str(), response.length(), 0);
+
+    }
+    else if(upper_request.find("SET")){
+      if(args.size() < 3) continue;
+
+      std::string key = args[1];
+      std::string value = args[2];
+
+      {
+        std::lock_guard<std::mutex> lock(kv_mutex);
+        kv_store[key] = value;
+
+      }
+
+      const char *response = "+OK\r\n";
+      send(client_fd, response, strlen(response),0);
     }
 
   }
