@@ -13,7 +13,16 @@
 #include <unordered_map>
 #include <mutex>
 
-std::unordered_map<std::string, std::string> kv_store;
+enum class DataType{STRING,LIST};
+struct ValueWithExpiry{
+  DataType type = DataType::STRING;
+  std::string value;
+  std::vector<std::string> list;
+  std::chrono::steady_clock::time_point expiry_time;
+  bool has_expiry = false;
+};
+
+std::unordered_map<std::string, ValueWithExpiry> kv_store;
 std::mutex kv_mutex;
 
 std::vector<std::string> parse_resp_array(const std::string& request){
@@ -52,56 +61,102 @@ void handle_client(int client_fd){
     std::vector<std::string> args = parse_resp_array(request);
 
     
-    std::string upper_request = args[0];
-    std::transform(upper_request.begin(), upper_request.end(), upper_request.begin(), ::toupper);
+    std::string command = args[0];
+    std::transform(command.begin(), command.end(), command.begin(), ::toupper);
     
     
-    if(upper_request.find("PING")){
+    if(command == "PING"){
       const char *response = "+PONG\r\n";
       send(client_fd, response, strlen(response),0);
     }
-    else if (upper_request.find("ECHO")){
+    else if (command == "ECHO"){
       if(args.size()<2) continue;
-      std::string echo_arg = arg[1];
+      std::string echo_arg = args[1];
       std::string response = "$" +std::to_string(echo_arg.length()) + "\r\n" + echo_arg + "\r\n";
       send(client_fd, response.c_str(), response.length(), 0);
     }
 
-    else if(upper_request.find("GET")){
-      if(args_request.size()<2) continue;
-
-      std::string key  = args[1];
-      std::string response;
-      {
-        std::lock_guard<std::mutex> lock(kv_mutex);
-        if(kv_store.find(key) != kv_store.end()){
-          std::string value = kv_store[key];
-          response = "$" + std::to_string(value.length()) + "\r\n" + value + "\r\n";
-
-        }
-        else{
-          response = "$-1\r\n";
-        }
-
-      }
-      send(client_fd, response.c_str(), response.length(), 0);
-
-    }
-    else if(upper_request.find("SET")){
+    else if(command == "SET"){
       if(args.size() < 3) continue;
 
+      ValueWithExpiry entry;
       std::string key = args[1];
-      std::string value = args[2];
+      entry.value = args[2];
+
+      if(args.size()>=5){
+        std::string option = args[3];
+        std::transform(option.begin(),option.end(),option.begin(),::toupper);
+
+        if(option == "PX"){
+          long long ms = std::stoll(args[4]);
+          entry.expiry_time = std::chrono::steady_clock::now() + std::chrono::milliseconds(ms);
+          entry.has_expiry = true;
+
+        }
+      }
 
       {
         std::lock_guard<std::mutex> lock(kv_mutex);
-        kv_store[key] = value;
+        kv_store[key] = entry;
 
       }
 
       const char *response = "+OK\r\n";
       send(client_fd, response, strlen(response),0);
     }
+    else if(command == "GET"){
+      if(args.size()<2) continue;
+
+      std::string key  = args[1];
+      std::string response =  "$-1\r\n";
+      {
+        std::lock_guard<std::mutex> lock(kv_mutex);
+        if(kv_store.count(key)){
+
+          auto& entry = kv_store[key];
+          
+          if(entry.has_expiry && std::chrono::steady_clock::now() >= entry.expiry_time){
+            kv_store.erase(key);
+          }
+          else{
+            response = "$" + std::to_string(entry.value.length()) + "\r\n" + entry.value + "\r\n";
+          }
+        }
+      }
+      send(client_fd, response.c_str(), response.length(), 0);
+
+    }
+    
+    else if(command == "RPUSH"){
+      if(args.size()<3) continue;
+
+      std::string key = args[1];
+      int new_length = 0;
+
+      {
+        std::lock_guard<std::mutex> lock(kv_mutex);
+
+  
+        auto& entry = kv_store[key];
+
+        entry.type = DataType::LIST;
+
+        
+
+        for (size_t i = 2;i<args.size(); i++){
+          entry.list.push_back(args[i]);
+        }
+
+        new_length = entry.list.size();
+
+      }
+
+      std::string response = ":" + std::to_string(new_length) + "\r\n";
+      send(client_fd, response.c_str(), response.length(), 0 );
+
+    }
+
+
 
   }
   close(client_fd);
