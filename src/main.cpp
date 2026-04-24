@@ -136,12 +136,8 @@ void handle_client(int client_fd){
       {
         std::lock_guard<std::mutex> lock(kv_mutex);
 
-  
         auto& entry = kv_store[key];
-
         entry.type = DataType::LIST;
-
-        
 
         for (size_t i = 2;i<args.size(); i++){
           entry.list.push_back(args[i]);
@@ -154,6 +150,40 @@ void handle_client(int client_fd){
       std::string response = ":" + std::to_string(new_length) + "\r\n";
       send(client_fd, response.c_str(), response.length(), 0 );
 
+    }
+
+    else if(command == "LRANGE"){
+      if(args.size()<4) continue;
+      
+      
+      std::string key = args[1];
+      int start = std::stoi(args[2]);
+      int stop = std::stoi(args[3]);
+    
+      std::vector<std::string> result;
+      
+      {
+        std::lock_guard<std::mutex> lock(kv_mutex);
+        
+        if(kv_store.count(key) && kv_store[key].type == DataType::LIST){
+          const auto& list = kv_store[key].list;
+          int n = list.size();
+
+          if(start<0) start = 0;
+          if(stop>=n) stop = n-1;
+
+          if(start<n && start<=stop){
+            for(int i=start; i<=stop; ++i){
+              result.push_back(list[i]);
+            }
+          }
+        }
+      }
+      std::string response = "*" std::to_string(result.size())+"\r\n";
+      for(const auto& item : result){
+        response += "$" + std::to_string(item.length()) + "\r\n" + item + "\r\n";
+      }
+      send(client_fd, response.c_str(), response.length(), 0);
     }
 
 
