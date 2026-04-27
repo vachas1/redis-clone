@@ -14,6 +14,7 @@
 #include <mutex>
 
 enum class DataType{STRING,LIST};
+
 struct ValueWithExpiry{
   DataType type = DataType::STRING;
   std::string value;
@@ -152,6 +153,31 @@ void handle_client(int client_fd){
 
     }
 
+    else if(command == "LPUSH"){
+      if(args.size()<3) continue;
+
+      std::string key = args[1];
+      int new_length = 0;
+
+      {
+        std::lock_guard<std::mutex> lock(kv_mutex);
+
+        auto& entry = kv_store[key];
+        entry.type = DataType::LIST;
+
+        for (size_t i = 2;i<args.size(); i++){
+          entry.list.insert(entry.list.begin(),args[i]);
+        }
+
+        new_length = entry.list.size();
+
+      }
+
+      std::string response = ":" + std::to_string(new_length) + "\r\n";
+      send(client_fd, response.c_str(), response.length(), 0 );
+
+    }
+
     else if(command == "LRANGE"){
       if(args.size()<4) continue;
       
@@ -167,7 +193,11 @@ void handle_client(int client_fd){
         
         if(kv_store.count(key) && kv_store[key].type == DataType::LIST){
           const auto& list = kv_store[key].list;
-          int n = list.size();
+          int n = static_cast<int>(list.size());
+
+
+          if(start<0) start = n+start;
+          if(stop<0) stop = n+stop;
 
           if(start<0) start = 0;
           if(stop>=n) stop = n-1;
@@ -179,14 +209,76 @@ void handle_client(int client_fd){
           }
         }
       }
-      std::string response = "*" std::to_string(result.size())+"\r\n";
+      std::string response = "*" + std::to_string(result.size())+"\r\n";
       for(const auto& item : result){
         response += "$" + std::to_string(item.length()) + "\r\n" + item + "\r\n";
       }
       send(client_fd, response.c_str(), response.length(), 0);
     }
+    
 
+    else if (command == "LLEN") {
+      if(args.size()<2) continue;
+      
+      std::string key = args[1];
+      int length = 0;
+      {
+        std::lock_guard<std::mutex> lock(kv_mutex);
+        if(kv_store.count(key)){
+          auto&entry = kv_store[key];
 
+          if(entry.type == DataType::LIST){
+            length = entry.list.size();
+
+          }
+          else{
+            const char* err = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            send(client_fd, err, strlen(err), 0);
+            continue;
+          }
+        }
+        else{
+          length = 0;
+        }
+        
+      }
+
+      std::string response = ":" + std::to_string(length) + "\r\n";
+      send(client_fd, response.c_str(), response.length(),0);
+      
+    }
+
+    else if(command == "LPOP"){
+      if(args.size()<2) continue;
+
+      std::string key = args[1];
+      std::string response = "$-1\r\n";
+      {
+        std::lock_guard<std::mutex> lock(kv_mutex);
+        if(kv_store.count(key)){
+          auto& entry = kv_store[key];
+          
+          if(entry.type == DataType::LIST){
+            
+            if(!entry.list.empty()){
+              std::string first_val = entry.list.front();
+              entry.list.erase(entry.list.begin());
+
+              response = "$"+ std::to_string(first_val.length()) + "\r\n" + first_val + "\r\n";
+
+            }
+          }
+
+          else{
+            const char* err = "-WRONGTYPE Operation against a key holding the wrong kind of value\r\n";
+            send(client_fd, err, strlen(err), 0);
+            continue;
+          }
+        }
+      }
+      send(client_fd, response.c_str(),response.length(), 0);
+    }
+    
 
   }
   close(client_fd);
